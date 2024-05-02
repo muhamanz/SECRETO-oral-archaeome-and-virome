@@ -1,0 +1,210 @@
+#Analysis scripts for the manuscript: "Composition, diversity, and interactions of oral archaeome and virome" by Muhammed Manzoor et al.
+#The data in this study are not publicly available due to the sensitive nature of the data derived from human subjects, including personal information. However, researchers who wish to use our data may do so by requesting from the SECRETO Oral Study Consortia Data Access Committee (https://ega-archive.org/dacs/EGAC00001003449).
+#Load packages
+#BiocManager::install("microbiome/mia", version="devel")
+packages <- c("ggplot2", "biomformat", "ggthemes", "phyloseq", "vegan", "microbiomeMarker",  "microbiome", "tidyverse",  "reshape2", "ComplexHeatmap", "maptree", "patchwork", "miaViz", " file2meco ", "SpiecEasi", "chorddiag")
+#Phenotype data is loaded from the included R object
+#Load metadata and biom file
+biom <- import_biom("cuatroc.biom", parseFunction=parse_taxonomy_greengenes, parallel=TRUE)
+metadata <- import_qiime_sample_data("metadata.txt")
+#Construct the primary phyloseq object.
+phyloseq <- merge_phyloseq(biom, metadata)
+#ADD TREE information to the phyloseq object.
+random_tree = rtree(ntaxa(phyloseq), rooted=TRUE, tip.label=taxa_names(phyloseq))
+phyloseq <- merge_phyloseq(biom, metadata, random_tree)
+#make tse from phyloseq
+tse<- makeTreeSummarizedExperimentFromPhyloseq(phyloseq)
+#remove participants who have used antibiotics preceeding 3 months of saliva sampling
+tse <- tse[ , colData(tse)$ANTIBIOTICS %in% FALSE]
+#subset only controls
+tse <- tse[ , colData(tse)$$Group %in% c("control"), ]
+#subset only archea and viruses
+tse<- tse [rowData(tse)$Kingdom %in% c("Viruses","Archaea"), ]
+#Subset the feature by kingdom viruses, and archaea
+tse_virus <- tse [rowData(tse)$Kingdom %in% c("Viruses"), ]
+tse_Archaea <- tse [rowData(tse)$Kingdom %in% c("Archaea"), ]
+#Agglomerate data at Phylum, Genus and species level
+tse_Phylum<- agglomerateByRank(tse, rank="Phylum")
+tse_Genus<- agglomerateByRank(tse, rank="Genus")
+tse_Species<- agglomerateByRank(tse, rank="Species")
+# add assay to tse object. 
+tse <- transformAssay(tse, assay.type = "counts", method = "relabundance")
+assays(tse)
+# Add CLR transformation in the data as a new assay
+tse <- transformSamples(tse, method = "clr", pseudocount=1)
+#plot the taxonomical tree
+rowData(altExp(tse,"Phylum"))$prevalence <- 
+    getPrevalence(altExp(tse,"Phylum"), detection = 1/100, sort = FALSE,
+                  assay.type = "counts", as_relative = TRUE)
+altExps(tse) <- splitByRanks(tse)
+altExps(tse) <-
+   lapply(altExps(tse),
+          function(y){
+              rowData(y)$prevalence <- 
+                  getPrevalence(y, detection = 0/100, sort = FALSE,
+                                assay_name = "counts", as_relative = TRUE)
+              y
+          })
+top_phyla <- getTopTaxa(altExp(tse,"Phylum"),
+                        method="prevalence",
+                        top=24L,
+                        assay_name="counts")
+
+top_phyla_mean <- getTopTaxa(altExp(tse,"Phylum"),
+                             method="mean",
+                             top=24L,
+                             assay_name="counts")
+x <- unsplitByRanks(tse, ranks = taxonomyRanks(tse)[1:6])
+x <- addTaxonomyTree(x)
+plotRowTree(x[rowData(x)$Phylum %in% top_phyla_mean,],
+            edge_colour_by = "Phylum",
+            tip_colour_by = "prevalence",
+            node_colour_by = "prevalence")
+#estimate diversity
+tse <- mia::estimateDiversitytse
+                             assay_name = "counts", # Calculate diversity from "counts" assay 
+                             index = "shannon") 
+#Alpha diversity visualizations
+# creates data frame from the collected data
+df <- as.data.frame(colData(tse))
+# Changes old levels with new levels
+df$Group  <- factor(df$Group)
+ggplot(df, aes(x = Group, y = shannon )) + 
+  geom_violin(trim=FALSE)+geom_boxplot(outlier.shape = NA) + geom_jitter(width = 0.1) + theme(text = element_text(size = 5))+ theme_classic() ggplot(df, aes(x = Group, y = observed )) + 
+  geom_violin(trim=FALSE)+geom_boxplot(outlier.shape = NA) + geom_jitter(width = 0.1) + theme(text = element_text(size = 5))+ theme_classic()
+#Visualizing taxonomic composition for viruses and archaea
+se <- relAbundanceCounts(tse_Archaea)
+se_Genus <- agglomerateByRank(tse_Archaea, rank ="Genus", onRankOnly=TRUE)
+top_taxa <- getTopTaxa(se_Genus,top = 10, assay_name = "relabundance")
+# Renaming the "Phylum" rank to keep only top taxa and the rest to "Other"
+genus_renamed <- lapply(rowData(se)$Genus,
+                       function(x){if (x %in% top_taxa) {x} else {"Other"}})
+rowData(se)$Genus <- as.character(genus_renamed)
+plotAbundance(se, assay_name="relabundance", rank = "Genus",
+           order_rank_by="abund",decreasing = TRUE,
+  use_relative = TRUE,
+  layout = c("bar", "point"),
+  one_facet = TRUE)
+se <- relAbundanceCounts(tse_virus)
+se_Genus <- agglomerateByRank(tse_virus, rank ="Genus", onRankOnly=TRUE)
+top_taxa <- getTopTaxa(se_Genus,top = 10, assay_name = "relabundance")
+# Renaming the "Phylum" rank to keep only top taxa and the rest to "Other"
+genus_renamed <- lapply(rowData(se)$Genus,
+                       function(x){if (x %in% top_taxa) {x} else {"Other"}})
+rowData(se)$Genus <- as.character(genus_renamed)
+
+plotAbundance(se, assay_name="relabundance", rank = "Genus",
+           order_rank_by="abund",decreasing = TRUE,
+  use_relative = TRUE,
+  layout = c("bar", "point"),
+  one_facet = TRUE)
+
+t#Composition heatmap
+tse_Phylum <- transformFeatures(tse_Phylum, assay_name = "clr", 
+                                       method = "z", name = "clr_z")
+# Get n most abundant taxa, and subsets the data by them
+top_taxa <- getTopTaxa(tse_Phylum, top = 30)
+tse_phylum_subset <- tse_Phylum [top_taxa, ]
+# Gets the assay table
+mat <- assay(tse_Phylum, "clr_z")
+# Creates the heatmap
+pheatmap(mat)
+# Hierarchical clustering
+taxa_hclust <- hclust(dist(mat), method = "complete")
+# Creates a phylogenetic tree
+taxa_tree <- as.phylo(taxa_hclust)
+# Plot taxa tree
+taxa_tree <- ggtree(taxa_tree) + 
+  theme(plot.margin=margin(0,0,0,0)) # removes margins
+# Get order of taxa in plot
+taxa_ordered <- get_taxa_name(taxa_tree)
+# Creates clusters
+taxa_clusters <- cutree(tree = taxa_hclust, k = 3)
+# Converts into data frame
+taxa_clusters <- data.frame(clusters = taxa_clusters)
+taxa_clusters$clusters <- factor(taxa_clusters$clusters)
+
+# Order data so that it's same as in phylo tree
+taxa_clusters <- taxa_clusters[taxa_ordered, , drop = FALSE] 
+# Adds information to rowData
+rowData(tse_phylum_subset)$clusters <- taxa_clusters[order(match(rownames(taxa_clusters), 
+rownames(tse_phylum_subset))), ]
+# Prints taxa and their clusters
+rowData(tse_phylum_subset)$clusters
+# Hierarchical clustering
+sample_hclust <- hclust(dist(t(mat)), method = "complete")
+# Creates a phylogenetic tree
+sample_tree <- as.phylo(sample_hclust)
+# Plot sample tree
+sample_tree <- ggtree(sample_tree) + layout_dendrogram() + 
+  theme(plot.margin=margin(0,0,0,0)) # removes margins
+# Get order of samples in plot
+samples_ordered <- rev(get_taxa_name(sample_tree))
+# Creates clusters
+sample_clusters <- factor(cutree(tree = sample_hclust, k = 3))
+# Converts into data frame
+sample_data <- data.frame(clusters = sample_clusters)
+# Order data so that it's same as in phylo tree
+sample_data <- sample_data[samples_ordered, , drop = FALSE] 
+# Order data based on 
+tse_phylum <- tse_phylum [ , rownames(sample_data)]
+# Add sample type data
+sample_data$sample_types <- factor(colData(tse_phylum)$Group)
+sample_data
+# Determines the scaling of colors
+# Scale colors
+breaks <- seq(-ceiling(max(abs(mat))), ceiling(max(abs(mat))), 
+              length.out = ifelse( max(abs(mat))>5, 2*ceiling(max(abs(mat))), 10 ) )
+colors <- colorRampPalette(c("darkblue", "blue", "white", "red", "darkred"))(length(breaks)-1)
+pheatmap(mat, annotation_row = taxa_clusters, 
+         annotation_col = sample_data,
+         breaks = breaks,
+         color = colors)
+#Differential abundance analysis using LEfSe
+set.seed(123)
+lefse<-run_lefse(phyloseq, group = "SMOKING", subgroup = NULL, taxa_rank = "all",
+  transform = c("identity", "log10", "log10p"), norm = "CPM",
+  norm_para = list(), kw_cutoff = 0.05, lda_cutoff = 2, bootstrap_n = 30, bootstrap_fraction = 2/3,  wilcoxon_cutoff = 0.05,
+  multigrp_strat = FALSE, strict = c("0"), sample_min = 10, only_same_subgrp = FALSE, curv = FALSE)
+#save the output
+write.csv(marker_table(lefse), "lefse_SMOKING.csv")
+#plot abundance from the LEfSe results
+p_abd <- plot_abundance(lefse, group = "SMOKING")
+#convert phyloseq into The microtable class
+meco_smokers <- phyloseq2meco(phyloseq_smokers)
+meco_nonsmokers <- phyloseq2meco(phyloseq_nonsmokers)
+# The parameter cor_method in trans_network is used to select correlation calculation method.
+t1 <- trans_network$new(dataset = meco_nonsmokers, cor_method = "sparcc",  cal_cor= "SparCC", use_sparcc_method = "SpiecEasi", filter_thres = 0.001) 
+t2 <- trans_network$new(dataset = meco_smokers, cor_method = "sparcc",  cal_cor= "SparCC", use_sparcc_method = "SpiecEasi", filter_thres = 0.001)
+# construct network; require igraph package
+t1$cal_network(COR_p_thres = 0.01, COR_optimization = TRUE)
+t2$cal_network(COR_p_thres = 0.01, COR_optimization = TRUE)
+# use arbitrary coefficient threshold to contruct network
+t1$cal_network(COR_p_thres = 0.01, COR_cut = 0.7)
+t2$cal_network(COR_p_thres = 0.01, COR_cut = 0.7)
+# return t1$res_network
+# return t2$res_network
+# invoke igraph cluster_fast_greedy function for this undirected network 
+t1$cal_module(method = "cluster_fast_greedy")
+t2$cal_module(method = "cluster_fast_greedy")
+# require rgexf package to be installed
+t1$save_network(filepath = "network_control.gexf")
+t2$save_network(filepath = "network_patient.gexf")
+# calculate network attributes
+t1$cal_network_attr()
+t1$res_network_attr
+t2$cal_network_attr()
+t2$res_network_attr
+# get node properties
+t1$get_node_table(node_roles = TRUE)
+t2$get_node_table(node_roles = TRUE)
+# return t1$res_node_table # return t2$res_node_table
+#Circos plots showed strong (r ≥ 0.8) correlations among multiple bacterial phyla, depicting the linkages between different phyla or within the same phylum
+t1$cal_sum_links(taxa_level = "Phylum")
+t2$cal_sum_links(taxa_level = "Phylum")
+# interactive visualization; require chorddiag package; see https://github.com/mattflor/chorddiag
+t1$plot_sum_links(plot_pos = TRUE, plot_num = 10, color_values = RColorBrewer::brewer.pal(10, "Paired"))
+t2$plot_sum_links(plot_pos = TRUE, plot_num = 10, color_values = RColorBrewer::brewer.pal(10, "Paired"))
+# From v1.2.0, method = "circlize" is available for conveniently saving the static plot
+t1$plot_sum_links(method = "circlize", transparency = 0.2, annotationTrackHeight = circlize::mm_h(c(5, 5)))
+t2$plot_sum_links(method = "circlize", transparency = 0.2, annotationTrackHeight = circlize::mm_h(c(5, 5)))
